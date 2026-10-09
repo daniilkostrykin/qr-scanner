@@ -29,29 +29,54 @@
     tg.ready();
     tg.expand();
 
+    let scannedData = null;
+    let isHandled = false;
+
+    function haptic(type) {
+      try {
+        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(type);
+      } catch (e) {}
+    }
+
+    // Единая точка завершения: sendData + close.
+    // Защита от гонки: событие scanQrPopupClosed и страховый setTimeout
+    // могут сработать оба — выполнять отправку нужно ровно один раз.
+    function finishAndSend() {
+      if (isHandled) return;
+      isHandled = true;
+
+      if (scannedData) {
+        try { tg.sendData(scannedData); } catch (e) {}
+      }
+      try { tg.close(); } catch (e) {}
+    }
+
+    // Штатное нативное закрытие видоискателя (крестик или после return true)
     tg.onEvent('scanQrPopupClosed', function() {
-      tg.close();
+      finishAndSend();
     });
 
+    // Запуск нативного сканера Telegram
     tg.showScanQrPopup({ text: "Наведите на фискальный QR-код чека (t=...&fn=...)" }, function(qrText) {
-      if (!qrText) return false;
+      if (isHandled) return true;
 
-      const isReceipt = qrText.includes("t=") && qrText.includes("fn=");
+      // Фискальный чек обязан содержать параметры t= и fn=
+      const isReceipt = typeof qrText === 'string' && qrText.includes('t=') && qrText.includes('fn=');
 
-      if (isReceipt) {
-        if (tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred('success');
-        }
-        tg.sendData(qrText);
-        tg.close();
-        return true; 
-      } else {
-
-        if (tg.HapticFeedback) {
-          tg.HapticFeedback.notificationOccurred('error');
-        }
-        return false; 
+      if (!isReceipt) {
+        // Чужой QR (СБП, реклама): вибро-ошибка, камера продолжает сканирование
+        haptic('error');
+        return false;
       }
+
+      // Валидный чек: вибро-успех, сохраняем строку, отдаём закрытие камеры клиенту Telegram
+      haptic('success');
+      scannedData = qrText;
+
+      // Страховка: если клиент Telegram задержит событие scanQrPopupClosed
+      setTimeout(finishAndSend, 350);
+
+      return true; // запускает штатную нативную анимацию закрытия камеры
     });
   </script>
 </body>

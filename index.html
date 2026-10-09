@@ -10,16 +10,19 @@
       background-color: var(--tg-theme-bg-color, #1a1a1a);
       color: var(--tg-theme-text-color, #ffffff);
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
       height: 100vh;
       margin: 0;
       font-family: sans-serif;
+      text-align: center;
+      padding: 20px;
     }
   </style>
 </head>
 <body>
-  <div>Запуск камеры...</div>
+  <div>Камера запускается...</div>
 
   <script>
     const tg = window.Telegram.WebApp;
@@ -30,14 +33,25 @@
       tg.close();
     });
 
-    tg.showScanQrPopup({ text: "Наведите камеру на QR-код внизу чека" }, function(qrText) {
-      if (qrText) {
-        tg.closeScanQrPopup();
+    tg.showScanQrPopup({ text: "Наведите на фискальный QR-код чека (t=...&fn=...)" }, function(qrText) {
+      if (!qrText) return false;
+
+      const isReceipt = qrText.includes("t=") && qrText.includes("fn=");
+
+      if (isReceipt) {
+        if (tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred('success');
+        }
         tg.sendData(qrText);
         tg.close();
-        return true;
+        return true; 
+      } else {
+
+        if (tg.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred('error');
+        }
+        return false; 
       }
-      return false;
     });
   </script>
 </body>

@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QR Scanner</title>
+  <title>Сканер чеков</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     body {
-      background-color: var(--tg-theme-bg-color, #000);
-      color: var(--tg-theme-text-color, #fff);
+      background-color: var(--tg-theme-bg-color, #1a1a1a);
+      color: var(--tg-theme-text-color, #ffffff);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -19,14 +19,20 @@
   </style>
 </head>
 <body>
-  <div>Открываем камеру...</div>
+  <div>Запуск камеры...</div>
 
   <script>
     const tg = window.Telegram.WebApp;
     tg.ready();
+    tg.expand();
 
-    tg.showScanQrPopup({ text: "Наведите камеру на QR-код чека" }, function(qrText) {
+    tg.onEvent('scanQrPopupClosed', function() {
+      tg.close();
+    });
+
+    tg.showScanQrPopup({ text: "Наведите камеру на QR-код внизу чека" }, function(qrText) {
       if (qrText) {
+        tg.closeScanQrPopup();
         tg.sendData(qrText);
         tg.close();
         return true;

@@ -240,9 +240,12 @@
       if (!document.hidden) fetchReceipts();
     });
 
-    // ---------- Нативный сканер (прежняя логика из qr-scanner) ----------
+    // ---------- Нативный сканер: сохранение чека напрямую на бэкенде ----------
+    // tg.sendData() блокируется при открытии Mini App через системное меню,
+    // поэтому чек сохраняется через POST /api/receipts/scan (Bearer initData).
     let scannedData = null;
-    let isHandled = false;
+    let saveInProgress = false;
+    let scanHandled = false;
 
     function haptic(type) {
       try {
@@ -250,36 +253,83 @@
       } catch (e) {}
     }
 
-    function finishAndSend() {
-      if (isHandled) return;
-      isHandled = true;
-      if (scannedData) {
-        try { tg.sendData(scannedData); } catch (e) {}
+    async function saveScannedReceipt() {
+      if (saveInProgress) return;
+      if (!tg.initData) {
+        haptic("error");
+        statusEl.textContent =
+          "Нет данных Telegram — обновите чат и откройте приложение заново через меню";
+        return;
       }
-      try { tg.close(); } catch (e) {}
+      saveInProgress = true;
+      statusEl.textContent = "Сохраняю чек из ФНС...";
+      try {
+        const resp = await fetch(API_BASE_URL + "/api/receipts/scan", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + tg.initData,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ qr: scannedData })
+        });
+
+        if (resp.status === 201) {
+          haptic("success");
+          await fetchReceipts(); // перезагрузка списка чеков
+          statusEl.textContent = "";
+          try { if (tg.closeScanQrPopup) tg.closeScanQrPopup(); } catch (e) {}
+          return;
+        }
+
+        let data = {};
+        try { data = await resp.json(); } catch (e) {}
+
+        if (resp.status === 409) {
+          haptic("warning");
+          statusEl.textContent = "⚠️ Этот чек уже был добавлен ранее";
+          return;
+        }
+        if (resp.status === 401) {
+          haptic("error");
+          statusEl.textContent = "Сессия устарела — закройте и откройте приложение заново";
+          return;
+        }
+        // 422 (ошибка ФНС) и прочие ошибки — показываем detail с бэкенда
+        haptic("error");
+        statusEl.textContent =
+          "❌ " + (data.detail || data.error || "Не удалось сохранить чек (HTTP " + resp.status + ")");
+      } catch (e) {
+        // Ошибка сети — detail из исключения
+        haptic("error");
+        statusEl.textContent = "❌ " + ((e && e.message) || "Ошибка сети при сохранении чека");
+      } finally {
+        saveInProgress = false;
+      }
     }
 
     tg.onEvent("scanQrPopupClosed", function () {
-      finishAndSend();
+      scanHandled = false; // попап закрыт (успех или отмена) — можно сканировать снова
     });
 
     document.getElementById("fab").addEventListener("click", function () {
+      if (saveInProgress) return;
       scannedData = null;
-      isHandled = false;
+      scanHandled = false;
+      statusEl.textContent = "";
       tg.showScanQrPopup(
         { text: "Наведите на фискальный QR-код чека (t=...&fn=...)" },
         function (qrText) {
-          if (isHandled) return true;
+          if (scanHandled) return true;
           const isReceipt =
             typeof qrText === "string" && qrText.includes("t=") && qrText.includes("fn=");
           if (!isReceipt) {
             haptic("error");
             return false; // чужой QR — камера продолжает сканирование
           }
-          haptic("success");
+          scanHandled = true;
           scannedData = qrText;
-          setTimeout(finishAndSend, 350); // страховка от задержки события закрытия
-          return true; // нативная анимация закрытия камеры Telegram
+          saveScannedReceipt(); // вместо tg.sendData(): прямой POST на бэкенд
+          return true; // true закрывает попап камеры (документация Telegram)
         }
       );
     });

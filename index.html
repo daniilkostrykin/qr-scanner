@@ -2,33 +2,245 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Сканер чеков</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Чеки</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body {
-      background-color: var(--tg-theme-bg-color, #1a1a1a);
-      color: var(--tg-theme-text-color, #ffffff);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
       margin: 0;
-      font-family: sans-serif;
-      text-align: center;
-      padding: 20px;
+      background: var(--tg-theme-bg-color, #121212);
+      color: var(--tg-theme-text-color, #ffffff);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding-bottom: calc(88px + env(safe-area-inset-bottom));
     }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--tg-theme-bg-color, #121212);
+      padding: calc(env(safe-area-inset-top) + 10px) 12px 8px;
+      border-bottom: 1px solid var(--tg-theme-hint-color, rgba(255,255,255,.12));
+    }
+    .search {
+      width: 100%; border: 0; outline: 0;
+      background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      color: var(--tg-theme-text-color, #ffffff);
+      border-radius: 10px; padding: 10px 14px; font-size: 15px;
+    }
+    .search::placeholder { color: var(--tg-theme-hint-color, #8e8e93); }
+    .chips { display: flex; gap: 8px; margin-top: 8px; }
+    .chip {
+      border: 0; border-radius: 16px; padding: 6px 12px; font-size: 13px;
+      background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      color: var(--tg-theme-text-color, #ffffff);
+      opacity: .6; cursor: pointer; transition: opacity .15s;
+    }
+    .chip.active {
+      opacity: 1;
+      background: var(--tg-theme-button-color, #3b82f6);
+      color: var(--tg-theme-button-text-color, #ffffff);
+    }
+    #status { font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); padding: 6px 14px 0; min-height: 18px; }
+    .card {
+      margin: 8px 12px; border-radius: 12px; overflow: hidden;
+      background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+    }
+    .card-head { padding: 12px 14px; cursor: pointer; }
+    .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .store { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sum { font-weight: 700; font-size: 15px; white-space: nowrap; }
+    .row2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .date { font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+    .badge.PERSONAL { background: rgba(16,185,129,.18); color: #10b981; }
+    .badge.FAMILY { background: rgba(59,130,246,.18); color: #3b82f6; }
+    .count { margin-left: auto; font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); }
+    .items { max-height: 0; overflow: hidden; transition: max-height .3s ease; }
+    .card.open .items { max-height: 800px; }
+    .item {
+      display: flex; gap: 10px; justify-content: space-between;
+      padding: 8px 14px; font-size: 13px;
+      border-top: 1px solid var(--tg-theme-hint-color, rgba(255,255,255,.08));
+    }
+    .item .name { flex: 1; }
+    .item .qty { color: var(--tg-theme-hint-color, #8e8e93); font-size: 12px; white-space: nowrap; }
+    .fab {
+      position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
+      width: 56px; height: 56px; border: 0; border-radius: 50%; cursor: pointer;
+      background: var(--tg-theme-button-color, #3b82f6);
+      color: var(--tg-theme-button-text-color, #ffffff);
+      font-size: 24px; box-shadow: 0 4px 14px rgba(0,0,0,.4);
+    }
+    .empty { text-align: center; color: var(--tg-theme-hint-color, #8e8e93); padding: 48px 20px; font-size: 14px; }
   </style>
 </head>
 <body>
-  <div>Камера запускается...</div>
+  <header>
+    <input id="search" class="search" type="search" placeholder="Поиск по магазину и товарам" autocomplete="off">
+    <div class="chips">
+      <button class="chip active" data-filter="all">Все</button>
+      <button class="chip" data-filter="PERSONAL">👤 Личные</button>
+      <button class="chip" data-filter="FAMILY">👥 Семья</button>
+    </div>
+  </header>
+  <div id="status"></div>
+  <main id="list"></main>
+  <button id="fab" class="fab" aria-label="Сканировать чек">📷</button>
 
   <script>
     const tg = window.Telegram.WebApp;
     tg.ready();
     tg.expand();
 
+    // Адрес HTTP API бэкенда (api/server.py). Для продакшена — публичный туннель/домен.
+    const API_BASE_URL = "https://ваш-туннель-или-домен";
+    const CACHE_KEY = "cached_receipts";
+
+    let receipts = [];
+    let activeFilter = "all";
+    let query = "";
+    const expanded = new Set();
+
+    const listEl = document.getElementById("list");
+    const statusEl = document.getElementById("status");
+
+    function money(kopecks) {
+      return (kopecks / 100).toFixed(2) + " ₽";
+    }
+
+    function formatDate(value) {
+      if (!value) return "";
+      const raw = String(value).trim();
+      let d = new Date(/^[0-9T:\- ]+$/.test(raw) ? raw.replace(" ", "T") : raw);
+      if (isNaN(d) && /^\d+$/.test(raw)) {
+        // запасной путь: unix timestamp (мс либо секунды)
+        const n = Number(raw);
+        d = new Date(n >= 1e11 ? n : n * 1000);
+      }
+      if (isNaN(d)) return raw;
+      return d.toLocaleString("ru-RU", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    }
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function visibleReceipts() {
+      const q = query.trim().toLowerCase();
+      return receipts.filter((r) => {
+        if (activeFilter !== "all" && r.category !== activeFilter) return false;
+        if (!q) return true;
+        if (String(r.store || "").toLowerCase().includes(q)) return true;
+        return (r.items || []).some((it) =>
+          String(it.name || "").toLowerCase().includes(q)
+        );
+      });
+    }
+
+    function render() {
+      const list = visibleReceipts();
+      if (!list.length) {
+        listEl.innerHTML =
+          '<div class="empty">' +
+          (receipts.length ? "Ничего не найдено" : "Чеков пока нет") +
+          "</div>";
+        return;
+      }
+      listEl.innerHTML = list.map((r) => {
+        const items = (r.items || []).map((it) =>
+          '<div class="item">' +
+            '<span class="name">' + esc(it.name) + "</span>" +
+            '<span class="qty">' + it.quantity + " × " + money(it.price) + "</span>" +
+            "<span>" + money(it.sum) + "</span>" +
+          "</div>"
+        ).join("");
+        const badge = r.category === "FAMILY"
+          ? '<span class="badge FAMILY">👥 Семья</span>'
+          : '<span class="badge PERSONAL">👤 Личные</span>';
+        return (
+          '<div class="card' + (expanded.has(r.id) ? " open" : "") + '" data-id="' + r.id + '">' +
+            '<div class="card-head">' +
+              '<div class="row1">' +
+                '<div class="store">' + esc(r.store) + "</div>" +
+                '<div class="sum">' + money(r.total_sum) + "</div>" +
+              "</div>" +
+              '<div class="row2">' +
+                '<span class="date">' + esc(formatDate(r.date_time)) + "</span>" +
+                badge +
+                '<span class="count">' + r.items_count + " поз.</span>" +
+              "</div>" +
+            "</div>" +
+            '<div class="items">' + items + "</div>" +
+          "</div>"
+        );
+      }).join("");
+    }
+
+    async function fetchReceipts() {
+      if (!tg.initData) {
+        statusEl.textContent =
+          "Откройте приложение через кнопку в боте — история доступна только внутри Telegram";
+        return;
+      }
+      try {
+        const resp = await fetch(API_BASE_URL + "/api/receipts", {
+          headers: { Authorization: "Bearer " + tg.initData },
+        });
+        if (resp.status === 401) {
+          statusEl.textContent = "Сессия устарела — закройте и откройте приложение заново";
+          return;
+        }
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        receipts = await resp.json();
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(receipts)); } catch (e) {}
+        statusEl.textContent = "";
+      } catch (e) {
+        statusEl.textContent = receipts.length
+          ? "Не удалось обновить — показаны сохранённые данные"
+          : "Не удалось загрузить данные";
+      }
+      render();
+    }
+
+    // Раскрытие карточки по клику
+    listEl.addEventListener("click", (e) => {
+      const head = e.target.closest(".card-head");
+      if (!head) return;
+      const card = head.parentElement;
+      const id = Number(card.dataset.id);
+      card.classList.toggle("open");
+      if (expanded.has(id)) expanded.delete(id);
+      else expanded.add(id);
+    });
+
+    // Поиск в реальном времени (дебаунс 120 мс)
+    let searchTimer = null;
+    document.getElementById("search").addEventListener("input", (e) => {
+      query = e.target.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(render, 120);
+    });
+
+    // Чипы-фильтры категорий
+    document.querySelectorAll(".chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".chip").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeFilter = btn.dataset.filter;
+        render();
+      });
+    });
+
+    // Обновление данных при возврате во вкладку
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) fetchReceipts();
+    });
+
+    // ---------- Нативный сканер (прежняя логика из qr-scanner) ----------
     let scannedData = null;
     let isHandled = false;
 
@@ -38,46 +250,48 @@
       } catch (e) {}
     }
 
-    // Единая точка завершения: sendData + close.
-    // Защита от гонки: событие scanQrPopupClosed и страховый setTimeout
-    // могут сработать оба — выполнять отправку нужно ровно один раз.
     function finishAndSend() {
       if (isHandled) return;
       isHandled = true;
-
       if (scannedData) {
         try { tg.sendData(scannedData); } catch (e) {}
       }
       try { tg.close(); } catch (e) {}
     }
 
-    // Штатное нативное закрытие видоискателя (крестик или после return true)
-    tg.onEvent('scanQrPopupClosed', function() {
+    tg.onEvent("scanQrPopupClosed", function () {
       finishAndSend();
     });
 
-    // Запуск нативного сканера Telegram
-    tg.showScanQrPopup({ text: "Наведите на фискальный QR-код чека (t=...&fn=...)" }, function(qrText) {
-      if (isHandled) return true;
-
-      // Фискальный чек обязан содержать параметры t= и fn=
-      const isReceipt = typeof qrText === 'string' && qrText.includes('t=') && qrText.includes('fn=');
-
-      if (!isReceipt) {
-        // Чужой QR (СБП, реклама): вибро-ошибка, камера продолжает сканирование
-        haptic('error');
-        return false;
-      }
-
-      // Валидный чек: вибро-успех, сохраняем строку, отдаём закрытие камеры клиенту Telegram
-      haptic('success');
-      scannedData = qrText;
-
-      // Страховка: если клиент Telegram задержит событие scanQrPopupClosed
-      setTimeout(finishAndSend, 350);
-
-      return true; // запускает штатную нативную анимацию закрытия камеры
+    document.getElementById("fab").addEventListener("click", function () {
+      scannedData = null;
+      isHandled = false;
+      tg.showScanQrPopup(
+        { text: "Наведите на фискальный QR-код чека (t=...&fn=...)" },
+        function (qrText) {
+          if (isHandled) return true;
+          const isReceipt =
+            typeof qrText === "string" && qrText.includes("t=") && qrText.includes("fn=");
+          if (!isReceipt) {
+            haptic("error");
+            return false; // чужой QR — камера продолжает сканирование
+          }
+          haptic("success");
+          scannedData = qrText;
+          setTimeout(finishAndSend, 350); // страховка от задержки события закрытия
+          return true; // нативная анимация закрытия камеры Telegram
+        }
+      );
     });
+
+    // Кэш при старте: мгновенный рендер из localStorage, затем фоновое обновление
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) receipts = JSON.parse(cached) || [];
+    } catch (e) {}
+    render();
+    fetchReceipts();
   </script>
 </body>
 </html>
+

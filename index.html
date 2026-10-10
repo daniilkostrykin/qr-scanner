@@ -84,6 +84,45 @@
       font-size: 24px; box-shadow: 0 4px 14px rgba(0,0,0,.4);
     }
     .empty { text-align: center; color: var(--tg-theme-hint-color, #8e8e93); padding: 48px 20px; font-size: 14px; }
+    .cashback-chip {
+      flex: none; border: 0; cursor: pointer;
+      border-radius: 10px; padding: 2px 8px; font-size: 12px; line-height: 1.5;
+      background: rgba(245,158,11,.16); color: #f59e0b;
+    }
+    .cashback-chip:not(.on) { background: transparent; color: var(--tg-theme-hint-color, #8e8e93); opacity: .5; }
+    .cashback-chip:active { transform: scale(.93); }
+    .old-sum { text-decoration: line-through; color: var(--tg-theme-hint-color, #8e8e93); }
+    .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; z-index: 20; }
+    .sheet[hidden] { display: none; }
+    .sheet-card {
+      width: 100%; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+      background: var(--tg-theme-bg-color, #121212);
+      border-radius: 14px 14px 0 0;
+    }
+    .sheet-title { font-weight: 600; font-size: 15px; }
+    .sheet-sub {
+      font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); margin-top: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sheet-presets { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .preset {
+      border: 0; cursor: pointer; border-radius: 12px; padding: 8px 14px; font-size: 14px;
+      background: var(--tg-theme-secondary-bg-color, #1c1c1e); color: var(--tg-theme-text-color, #ffffff);
+    }
+    .preset:active { transform: scale(.95); }
+    .sheet-custom { display: flex; gap: 8px; margin-bottom: 10px; }
+    .sheet-input {
+      flex: 1; border: 0; outline: 0; border-radius: 10px; padding: 10px 12px; font-size: 15px;
+      background: var(--tg-theme-secondary-bg-color, #1c1c1e); color: var(--tg-theme-text-color, #ffffff);
+    }
+    .sheet-btn {
+      border: 0; cursor: pointer; border-radius: 10px; padding: 10px 16px; font-size: 14px;
+      background: var(--tg-theme-button-color, #3b82f6); color: var(--tg-theme-button-text-color, #ffffff);
+    }
+    .sheet-btn.ghost {
+      width: 100%; background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      color: var(--tg-theme-text-color, #ffffff);
+    }
   </style>
 </head>
 <body>
@@ -98,6 +137,19 @@
   <div id="status"></div>
   <main id="list"></main>
   <button id="fab" class="fab" aria-label="Сканировать чек">📷</button>
+
+  <div id="cbSheet" class="sheet" hidden>
+    <div class="sheet-card" role="dialog" aria-label="Кэшбэк позиции">
+      <div class="sheet-title">🪙 Кэшбэк позиции</div>
+      <div id="cbName" class="sheet-sub"></div>
+      <div id="cbPresets" class="sheet-presets"></div>
+      <div class="sheet-custom">
+        <input id="cbInput" class="sheet-input" type="number" min="0" max="100" inputmode="numeric" placeholder="0–100">
+        <button type="button" id="cbApply" class="sheet-btn">OK</button>
+      </div>
+      <button type="button" id="cbCancel" class="sheet-btn ghost">Отмена</button>
+    </div>
+  </div>
 
   <script>
     const tg = window.Telegram.WebApp;
@@ -164,19 +216,31 @@
         return;
       }
       listEl.innerHTML = list.map((r) => {
-        const items = (r.items || []).map((it) =>
-          '<div class="item">' +
-            '<span class="name">' + esc(it.name) + "</span>" +
-            '<span class="qty">' + it.quantity + " × " + money(it.price) + "</span>" +
-            (it.id
-              ? '<button type="button" class="cat-toggle ' + it.expense_type + '"' +
-                ' data-receipt="' + r.id + '" data-item="' + it.id + '"' +
-                ' aria-label="Сменить категорию позиции">' +
-                (it.expense_type === "FAMILY" ? "👥" : "👤") + "</button>"
-              : "") +
-            "<span>" + money(it.sum) + "</span>" +
-          "</div>"
-        ).join("");
+        const items = (r.items || []).map((it) => {
+          const cb = it.cashback_percent || 0;
+          const eff = Math.round((it.sum * (100 - cb)) / 100); // как на бэкенде: половина вверх
+          return (
+            '<div class="item">' +
+              '<span class="name">' + esc(it.name) + "</span>" +
+              '<span class="qty">' + it.quantity + " × " + money(it.price) + "</span>" +
+              (it.id
+                ? '<button type="button" class="cat-toggle ' + it.expense_type + '"' +
+                  ' data-receipt="' + r.id + '" data-item="' + it.id + '"' +
+                  ' aria-label="Сменить категорию позиции">' +
+                  (it.expense_type === "FAMILY" ? "👥" : "👤") + "</button>" +
+                  '<button type="button" class="cashback-chip' + (cb > 0 ? " on" : "") + '"' +
+                  ' data-receipt="' + r.id + '" data-item="' + it.id + '"' +
+                  ' aria-label="Кэшбэк позиции">' +
+                  (cb > 0 ? "🏷️ -" + cb + "%" : "🪙") + "</button>"
+                : "") +
+              "<span>" +
+                (cb > 0
+                  ? '<s class="old-sum">' + money(it.sum) + "</s> " + money(eff)
+                  : money(it.sum)) +
+              "</span>" +
+            "</div>"
+          );
+        }).join("");
         const badgeLabel = r.category === "FAMILY" ? "👥 Семья"
           : r.category === "SPLIT" ? "↔️ Разделён" : "👤 Личные";
         const badgeClass = r.category === "FAMILY" ? "FAMILY"
@@ -241,6 +305,12 @@
       if (toggle) {
         e.stopPropagation();
         toggleItemCategory(Number(toggle.dataset.receipt), Number(toggle.dataset.item));
+        return;
+      }
+      const cbChip = e.target.closest(".cashback-chip");
+      if (cbChip) {
+        e.stopPropagation(); // клик по чипу не сворачивает/разворачивает карточку
+        openCashbackSheet(Number(cbChip.dataset.receipt), Number(cbChip.dataset.item));
         return;
       }
       const head = e.target.closest(".card-head");
@@ -353,6 +423,86 @@
         statusEl.textContent = "❌ " + ((e && e.message) || "Не удалось изменить категорию чека");
       }
     }
+
+    // ---------- Кэшбэк позиции (шторка с пресетами) ----------
+    let cbTarget = null; // {receiptId, itemId} — позиция, для которой открыта шторка
+    const cbSheet = document.getElementById("cbSheet");
+
+    function openCashbackSheet(receiptId, itemId) {
+      const receipt = receipts.find((r) => r.id === receiptId);
+      const item = receipt && (receipt.items || []).find((it) => it.id === itemId);
+      if (!item) return;
+      cbTarget = { receiptId, itemId };
+      document.getElementById("cbName").textContent = item.name;
+      document.getElementById("cbInput").value = String(item.cashback_percent || 0);
+      document.getElementById("cbPresets").innerHTML = [0, 5, 10, 20, 50]
+        .map((p) => '<button type="button" class="preset" data-pct="' + p + '">' + p + "%</button>")
+        .join("");
+      cbSheet.hidden = false;
+    }
+
+    function closeCashbackSheet() {
+      cbSheet.hidden = true;
+      cbTarget = null;
+    }
+
+    async function setItemCashback(receiptId, itemId, percent) {
+      const receipt = receipts.find((r) => r.id === receiptId);
+      const item = receipt && (receipt.items || []).find((it) => it.id === itemId);
+      if (!item) return;
+      if (!tg.initData) {
+        statusEl.textContent =
+          "Нет данных Telegram — обновите чат и откройте приложение заново через меню";
+        return;
+      }
+      const prev = item.cashback_percent || 0;
+      item.cashback_percent = percent; // оптимистичное обновление строки товара
+      render();
+      try {
+        const resp = await fetch(API_BASE_URL + "/api/items/" + itemId, {
+          method: "PATCH",
+          headers: {
+            "Authorization": "Bearer " + tg.initData,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ cashback_percent: percent })
+        });
+        if (!resp.ok) throw new Error(resp.status === 401
+          ? "Сессия устарела — закройте и откройте приложение заново"
+          : "HTTP " + resp.status);
+        const data = await resp.json().catch(() => ({}));
+        if (typeof data.cashback_percent === "number") item.cashback_percent = data.cashback_percent;
+        render();
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(receipts)); } catch (e) {}
+        try { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); } catch (e) {}
+      } catch (e) {
+        item.cashback_percent = prev; // откат при ошибке
+        render();
+        try { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error"); } catch (err) {}
+        statusEl.textContent = "❌ " + ((e && e.message) || "Не удалось изменить кэшбэк");
+      }
+    }
+
+    document.getElementById("cbPresets").addEventListener("click", (e) => {
+      const btn = e.target.closest(".preset");
+      if (!btn || !cbTarget) return;
+      setItemCashback(cbTarget.receiptId, cbTarget.itemId, Number(btn.dataset.pct));
+      closeCashbackSheet();
+    });
+    document.getElementById("cbApply").addEventListener("click", () => {
+      if (!cbTarget) return;
+      const v = parseInt(document.getElementById("cbInput").value, 10);
+      if (isNaN(v) || v < 0 || v > 100) {
+        statusEl.textContent = "❌ Кэшбэк должен быть целым числом от 0 до 100";
+        return;
+      }
+      setItemCashback(cbTarget.receiptId, cbTarget.itemId, v);
+      closeCashbackSheet();
+    });
+    document.getElementById("cbCancel").addEventListener("click", closeCashbackSheet);
+    cbSheet.addEventListener("click", (e) => {
+      if (e.target === cbSheet) closeCashbackSheet(); // клик по подложке
+    });
 
     // Поиск в реальном времени (дебаунс 120 мс)
     let searchTimer = null;

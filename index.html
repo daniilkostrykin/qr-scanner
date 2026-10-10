@@ -46,7 +46,15 @@
     }
     .card-head { padding: 12px 14px; cursor: pointer; }
     .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-    .store { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .store {
+      font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; flex: 1; min-width: 0; margin-right: 6px;
+    }
+    .rename-btn {
+      flex: none; border: 0; background: transparent; cursor: pointer;
+      font-size: 12px; padding: 2px 4px; opacity: .55;
+    }
+    .rename-btn:active { transform: scale(.9); }
     .sum { font-weight: 700; font-size: 15px; white-space: nowrap; }
     .row2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .date { font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); }
@@ -123,6 +131,10 @@
       width: 100%; background: var(--tg-theme-secondary-bg-color, #1c1c1e);
       color: var(--tg-theme-text-color, #ffffff);
     }
+    .sheet-btn.inline {
+      padding: 10px 14px; background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      color: var(--tg-theme-text-color, #ffffff);
+    }
   </style>
 </head>
 <body>
@@ -148,6 +160,19 @@
         <button type="button" id="cbApply" class="sheet-btn">OK</button>
       </div>
       <button type="button" id="cbCancel" class="sheet-btn ghost">Отмена</button>
+    </div>
+  </div>
+
+  <div id="rnSheet" class="sheet" hidden>
+    <div class="sheet-card" role="dialog" aria-label="Переименовать магазин">
+      <div class="sheet-title">✏️ Переименовать магазин</div>
+      <div id="rnRaw" class="sheet-sub"></div>
+      <div class="sheet-custom">
+        <input id="rnInput" class="sheet-input" type="text" maxlength="50" placeholder="Новое название" autocomplete="off">
+        <button type="button" id="rnClear" class="sheet-btn inline" aria-label="Очистить поле">✕</button>
+      </div>
+      <button type="button" id="rnApply" class="sheet-btn">Сохранить</button>
+      <button type="button" id="rnCancel" class="sheet-btn ghost">Отмена</button>
     </div>
   </div>
 
@@ -253,6 +278,8 @@
             '<div class="card-head">' +
               '<div class="row1">' +
                 '<div class="store">' + esc(r.store) + "</div>" +
+                '<button type="button" class="rename-btn" data-receipt="' + r.id + '"' +
+                ' aria-label="Переименовать магазин">✏️</button>' +
                 '<div class="sum">' + money(r.total_sum) + "</div>" +
               "</div>" +
               '<div class="row2">' +
@@ -295,6 +322,12 @@
 
     // Раскрытие карточки, переключение категории чека и позиции
     listEl.addEventListener("click", (e) => {
+      const rnBtn = e.target.closest(".rename-btn");
+      if (rnBtn) {
+        e.stopPropagation(); // клик по карандашу не сворачивает/разворачивает карточку
+        openRenameSheet(Number(rnBtn.dataset.receipt));
+        return;
+      }
       const catBadge = e.target.closest(".badge");
       if (catBadge) {
         e.stopPropagation(); // клик по бейджу не сворачивает/разворачивает карточку
@@ -502,6 +535,94 @@
     document.getElementById("cbCancel").addEventListener("click", closeCashbackSheet);
     cbSheet.addEventListener("click", (e) => {
       if (e.target === cbSheet) closeCashbackSheet(); // клик по подложке
+    });
+
+    // ---------- Переименование магазина (алиас) ----------
+    let rnTarget = null; // {receiptId} — чек, для которого открыта шторка
+    const rnSheet = document.getElementById("rnSheet");
+
+    function openRenameSheet(receiptId) {
+      const receipt = receipts.find((r) => r.id === receiptId);
+      if (!receipt) return;
+      rnTarget = { receiptId };
+      document.getElementById("rnRaw").textContent = receipt.raw_store || receipt.store || "";
+      document.getElementById("rnInput").value = receipt.store || "";
+      rnSheet.hidden = false;
+      document.getElementById("rnInput").focus();
+    }
+
+    function closeRenameSheet() {
+      rnSheet.hidden = true;
+      rnTarget = null;
+    }
+
+    async function renameStore(receiptId, newName) {
+      const receipt = receipts.find((r) => r.id === receiptId);
+      if (!receipt) return;
+      const rawName = receipt.raw_store || receipt.store;
+      if (!rawName) return;
+      if (!tg.initData) {
+        statusEl.textContent =
+          "Нет данных Telegram — обновите чат и откройте приложение заново через меню";
+        return;
+      }
+      const trimmed = (newName || "").trim();
+      if (trimmed.length > 50) {
+        statusEl.textContent = "❌ Название не длиннее 50 символов";
+        return;
+      }
+
+      // Оптимистично: у ВСЕХ чеков с таким же raw_store меняем отображаемое имя
+      const prevStores = new Map();
+      receipts.forEach((r) => {
+        if ((r.raw_store || r.store) === rawName) {
+          prevStores.set(r.id, r.store);
+          r.store = trimmed || rawName;
+        }
+      });
+      render();
+      try {
+        const resp = await fetch(API_BASE_URL + "/api/stores/alias", {
+          method: "PUT",
+          headers: {
+            "Authorization": "Bearer " + tg.initData,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ raw_name: rawName, display_name: trimmed })
+        });
+        if (!resp.ok) throw new Error(resp.status === 401
+          ? "Сессия устарела — закройте и откройте приложение заново"
+          : "HTTP " + resp.status);
+        const data = await resp.json().catch(() => ({}));
+        const finalName = data.display_name || trimmed || rawName;
+        receipts.forEach((r) => {
+          if ((r.raw_store || r.store) === rawName) r.store = finalName;
+        });
+        render();
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(receipts)); } catch (e) {}
+        try { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); } catch (e) {}
+      } catch (e) {
+        // Откат: возвращаем прежние названия
+        receipts.forEach((r) => { if (prevStores.has(r.id)) r.store = prevStores.get(r.id); });
+        render();
+        try { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error"); } catch (err) {}
+        statusEl.textContent = "❌ " + ((e && e.message) || "Не удалось переименовать магазин");
+      }
+    }
+
+    document.getElementById("rnApply").addEventListener("click", () => {
+      if (!rnTarget) return;
+      const v = document.getElementById("rnInput").value;
+      renameStore(rnTarget.receiptId, v);
+      closeRenameSheet();
+    });
+    document.getElementById("rnClear").addEventListener("click", () => {
+      document.getElementById("rnInput").value = "";
+      document.getElementById("rnInput").focus();
+    });
+    document.getElementById("rnCancel").addEventListener("click", closeRenameSheet);
+    rnSheet.addEventListener("click", (e) => {
+      if (e.target === rnSheet) closeRenameSheet(); // клик по подложке
     });
 
     // Поиск в реальном времени (дебаунс 120 мс)

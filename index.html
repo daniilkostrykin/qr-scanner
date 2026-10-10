@@ -53,6 +53,13 @@
     .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
     .badge.PERSONAL { background: rgba(16,185,129,.18); color: #10b981; }
     .badge.FAMILY { background: rgba(59,130,246,.18); color: #3b82f6; }
+    .badge.SPLIT { background: rgba(245,158,11,.18); color: #f59e0b; }
+    .cat-toggle {
+      flex: none; border: 0; cursor: pointer;
+      border-radius: 10px; padding: 2px 9px; font-size: 13px; line-height: 1.5;
+      background: rgba(16,185,129,.18); color: #10b981;
+    }
+    .cat-toggle.FAMILY { background: rgba(59,130,246,.18); color: #3b82f6; }
     .count { margin-left: auto; font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); }
     .items { max-height: 0; overflow: hidden; transition: max-height .3s ease; }
     .card.open .items { max-height: 800px; }
@@ -155,12 +162,20 @@
           '<div class="item">' +
             '<span class="name">' + esc(it.name) + "</span>" +
             '<span class="qty">' + it.quantity + " × " + money(it.price) + "</span>" +
+            (it.id
+              ? '<button type="button" class="cat-toggle ' + it.expense_type + '"' +
+                ' data-receipt="' + r.id + '" data-item="' + it.id + '"' +
+                ' aria-label="Сменить категорию позиции">' +
+                (it.expense_type === "FAMILY" ? "👥" : "👤") + "</button>"
+              : "") +
             "<span>" + money(it.sum) + "</span>" +
           "</div>"
         ).join("");
         const badge = r.category === "FAMILY"
           ? '<span class="badge FAMILY">👥 Семья</span>'
-          : '<span class="badge PERSONAL">👤 Личные</span>';
+          : r.category === "SPLIT"
+            ? '<span class="badge SPLIT">↔️ Разделён</span>'
+            : '<span class="badge PERSONAL">👤 Личные</span>';
         return (
           '<div class="card' + (expanded.has(r.id) ? " open" : "") + '" data-id="' + r.id + '">' +
             '<div class="card-head">' +
@@ -206,8 +221,14 @@
       render();
     }
 
-    // Раскрытие карточки по клику
+    // Раскрытие карточки по клику и переключение категории позиции
     listEl.addEventListener("click", (e) => {
+      const toggle = e.target.closest(".cat-toggle");
+      if (toggle) {
+        e.stopPropagation();
+        toggleItemCategory(Number(toggle.dataset.receipt), Number(toggle.dataset.item));
+        return;
+      }
       const head = e.target.closest(".card-head");
       if (!head) return;
       const card = head.parentElement;
@@ -216,6 +237,61 @@
       if (expanded.has(id)) expanded.delete(id);
       else expanded.add(id);
     });
+
+    // ---------- Переключение категории позиции (Личные/Семья) ----------
+    function deriveCategory(items) {
+      const types = new Set((items || []).map((it) => it.expense_type));
+      if (!types.size) return "PERSONAL";
+      return types.size === 1 ? Array.from(types)[0] : "SPLIT";
+    }
+
+    async function toggleItemCategory(receiptId, itemId) {
+      const receipt = receipts.find((r) => r.id === receiptId);
+      const item = receipt && (receipt.items || []).find((it) => it.id === itemId);
+      if (!item) return;
+      if (!tg.initData) {
+        statusEl.textContent =
+          "Нет данных Telegram — обновите чат и откройте приложение заново через меню";
+        return;
+      }
+
+      const prevType = item.expense_type;
+      const prevCategory = receipt.category;
+      const newType = prevType === "PERSONAL" ? "FAMILY" : "PERSONAL";
+
+      // Оптимистичное обновление интерфейса
+      item.expense_type = newType;
+      receipt.category = deriveCategory(receipt.items);
+      try { if (tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {}
+      render();
+
+      try {
+        const resp = await fetch(API_BASE_URL + "/api/items/" + itemId, {
+          method: "PATCH",
+          headers: {
+            "Authorization": "Bearer " + tg.initData,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ expense_type: newType })
+        });
+        if (!resp.ok) throw new Error(resp.status === 401
+          ? "Сессия устарела — закройте и откройте приложение заново"
+          : "HTTP " + resp.status);
+        const data = await resp.json().catch(() => ({}));
+        // Категория чека с сервера — источник истины (PERSONAL/FAMILY/SPLIT)
+        if (data.expense_type) item.expense_type = data.expense_type;
+        if (data.receipt_category) receipt.category = data.receipt_category;
+        render();
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(receipts)); } catch (e) {}
+      } catch (e) {
+        // Откат при сетевой/серверной ошибке
+        item.expense_type = prevType;
+        receipt.category = prevCategory;
+        render();
+        try { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error"); } catch (err) {}
+        statusEl.textContent = "❌ " + ((e && e.message) || "Не удалось изменить категорию позиции");
+      }
+    }
 
     // Поиск в реальном времени (дебаунс 120 мс)
     let searchTimer = null;
